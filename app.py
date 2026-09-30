@@ -2,6 +2,8 @@ import streamlit as st
 from PIL import Image
 import io
 import os
+import base64
+import vtracer
 from pathlib import Path
 
 st.set_page_config(page_title="Image Converter", layout="wide")
@@ -17,8 +19,54 @@ SUPPORTED_FORMATS = {
     "BMP": "bmp",
     "GIF": "gif",
     "TIFF": "tiff",
-    "ICO": "ico"
+    "ICO": "ico",
+    "SVG": "svg"
 }
+
+SVG_MODES = ["Vector trace", "Embed raster"]
+
+
+def svg_options(key_prefix):
+    """Render SVG conversion options and return them as a dict."""
+    svg_mode = st.radio(
+        "SVG mode:", SVG_MODES, key=f"{key_prefix}_svg_mode",
+        help="Vector trace converts pixels into scalable paths (best for logos, icons, flat art). "
+             "Embed raster wraps the original pixels inside an SVG file (exact copy, not scalable)."
+    )
+    opts = {"mode": svg_mode}
+    if svg_mode == "Vector trace":
+        opts["colormode"] = "binary" if st.checkbox("Black & white", key=f"{key_prefix}_svg_bw") else "color"
+        opts["filter_speckle"] = st.slider("Noise filter:", 0, 16, 4, key=f"{key_prefix}_svg_speckle",
+                                           help="Discard patches smaller than this many pixels")
+        opts["color_precision"] = st.slider("Color precision:", 1, 8, 6, key=f"{key_prefix}_svg_colors",
+                                            help="Higher keeps more distinct colors")
+    return opts
+
+
+def image_to_svg(image, opts):
+    """Convert a PIL image to SVG markup."""
+    if image.mode not in ("1", "L", "LA", "P", "RGB", "RGBA"):
+        image = image.convert("RGBA")
+    png_bytes = io.BytesIO()
+    image.save(png_bytes, format="PNG")
+    png_bytes = png_bytes.getvalue()
+
+    if opts["mode"] == "Embed raster":
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        w, h = image.size
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+            f'width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+            f'<image width="{w}" height="{h}" href="data:image/png;base64,{b64}"/></svg>'
+        )
+
+    return vtracer.convert_raw_image_to_svg(
+        png_bytes,
+        img_format="png",
+        colormode=opts["colormode"],
+        filter_speckle=opts["filter_speckle"],
+        color_precision=opts["color_precision"],
+    )
 
 # Create tabs for different conversion modes
 tab1, tab2 = st.tabs(["Single Image", "Batch Convert"])
@@ -49,6 +97,8 @@ with tab1:
             if output_format in ["JPG/JPEG", "WEBP"]:
                 quality = st.slider("Quality:", 1, 100, 95)
             
+            svg_opts = svg_options("single") if output_format == "SVG" else None
+            
             # Resize option
             resize_option = st.checkbox("Resize image?")
             width, height = None, None
@@ -75,18 +125,24 @@ with tab1:
                         converted_image = rgb_image
                     
                     # Save to bytes
-                    img_byte_arr = io.BytesIO()
-                    save_format = SUPPORTED_FORMATS[output_format].upper()
-                    save_kwargs = {"format": save_format}
-                    
-                    if output_format in ["JPG/JPEG", "WEBP"]:
-                        save_kwargs["quality"] = quality
-                    
-                    converted_image.save(img_byte_arr, **save_kwargs)
-                    img_byte_arr.seek(0)
-                    
-                    # Display converted image
-                    st.image(converted_image, caption="Converted Image", width="stretch")
+                    if output_format == "SVG":
+                        with st.spinner("Generating SVG..."):
+                            svg_markup = image_to_svg(converted_image, svg_opts)
+                        img_byte_arr = io.BytesIO(svg_markup.encode("utf-8"))
+                        st.image(svg_markup, caption="Converted Image", width="stretch")
+                    else:
+                        img_byte_arr = io.BytesIO()
+                        save_format = SUPPORTED_FORMATS[output_format].upper()
+                        save_kwargs = {"format": save_format}
+                        
+                        if output_format in ["JPG/JPEG", "WEBP"]:
+                            save_kwargs["quality"] = quality
+                        
+                        converted_image.save(img_byte_arr, **save_kwargs)
+                        img_byte_arr.seek(0)
+                        
+                        # Display converted image
+                        st.image(converted_image, caption="Converted Image", width="stretch")
                     
                     # Download button
                     file_ext = SUPPORTED_FORMATS[output_format]
@@ -96,7 +152,7 @@ with tab1:
                         label=f"Download {output_format}",
                         data=img_byte_arr,
                         file_name=filename,
-                        mime=f"image/{file_ext}" if file_ext != "jpeg" else "image/jpeg"
+                        mime="image/svg+xml" if file_ext == "svg" else f"image/{file_ext}"
                     )
                     st.success(f"✅ Image converted to {output_format}!")
                     
@@ -130,6 +186,8 @@ with tab2:
             if output_format in ["JPG/JPEG", "WEBP"]:
                 quality = st.slider("Quality:", 1, 100, 95, key="batch_quality")
             
+            svg_opts = svg_options("batch") if output_format == "SVG" else None
+            
             if st.button("Convert All Images", key="batch_convert"):
                 try:
                     converted_images = []
@@ -145,15 +203,18 @@ with tab2:
                                 image = rgb_image
                             
                             # Save to bytes
-                            img_byte_arr = io.BytesIO()
-                            save_format = SUPPORTED_FORMATS[output_format].upper()
-                            save_kwargs = {"format": save_format}
-                            
-                            if output_format in ["JPG/JPEG", "WEBP"]:
-                                save_kwargs["quality"] = quality
-                            
-                            image.save(img_byte_arr, **save_kwargs)
-                            img_byte_arr.seek(0)
+                            if output_format == "SVG":
+                                img_byte_arr = io.BytesIO(image_to_svg(image, svg_opts).encode("utf-8"))
+                            else:
+                                img_byte_arr = io.BytesIO()
+                                save_format = SUPPORTED_FORMATS[output_format].upper()
+                                save_kwargs = {"format": save_format}
+                                
+                                if output_format in ["JPG/JPEG", "WEBP"]:
+                                    save_kwargs["quality"] = quality
+                                
+                                image.save(img_byte_arr, **save_kwargs)
+                                img_byte_arr.seek(0)
                             
                             file_ext = SUPPORTED_FORMATS[output_format]
                             filename = f"{Path(uploaded_file.name).stem}.{file_ext}"
