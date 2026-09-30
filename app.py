@@ -34,7 +34,7 @@ with tab1:
         if uploaded_file:
             # Display the uploaded image
             image = Image.open(uploaded_file)
-            st.image(image, caption="Original Image", use_column_width=True)
+            st.image(image, caption="Original Image", width="stretch")
             st.text(f"Original format: {image.format}")
             st.text(f"Size: {image.size}")
     
@@ -86,7 +86,7 @@ with tab1:
                     img_byte_arr.seek(0)
                     
                     # Display converted image
-                    st.image(converted_image, caption="Converted Image", use_column_width=True)
+                    st.image(converted_image, caption="Converted Image", width="stretch")
                     
                     # Download button
                     file_ext = SUPPORTED_FORMATS[output_format]
