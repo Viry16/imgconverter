@@ -40,6 +40,11 @@ SVG_MODES = [SVG_TRACE, SVG_EMBED]
 
 # Tracing large images is slow and memory hungry; trace a downscaled copy instead.
 MAX_TRACE_SIDE = 1024
+# Detailed images (photos, noise) can trace into SVGs of 100+ MB, which exhausts
+# server memory. Refuse outputs above this size.
+MAX_SVG_BYTES = 20 * 1024 * 1024
+# st.image inlines SVGs as base64 into the page, so only preview small ones.
+MAX_SVG_PREVIEW_BYTES = 2 * 1024 * 1024
 
 
 class ConversionError(Exception):
@@ -61,7 +66,7 @@ class ConvertResult:
     filename: str
     data: bytes
     mime: str
-    preview: Image.Image | str = field(repr=False)
+    preview: Image.Image | str | None = field(repr=False)  # None when too large to preview
 
 
 def load_image(file) -> Image.Image:
@@ -152,13 +157,24 @@ def image_to_svg(image: Image.Image, options: ConvertOptions) -> str:
     png = io.BytesIO()
     traced.save(png, format="PNG")
 
-    svg = vtracer.convert_raw_image_to_svg(
-        png.getvalue(),
-        img_format="png",
-        colormode=options.svg_colormode,
-        filter_speckle=options.svg_filter_speckle,
-        color_precision=options.svg_color_precision,
-    )
+    try:
+        svg = vtracer.convert_raw_image_to_svg(
+            png.getvalue(),
+            img_format="png",
+            colormode=options.svg_colormode,
+            filter_speckle=options.svg_filter_speckle,
+            color_precision=options.svg_color_precision,
+        )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as e:  # vtracer's Rust panics derive from BaseException
+        raise ConversionError(f"Vector tracing failed ({e}). Try other settings or Embed raster mode.")
+
+    if len(svg) > MAX_SVG_BYTES:
+        raise ConversionError(
+            f"The traced SVG is too large ({len(svg) / 1024 / 1024:,.0f} MB). This image is too detailed "
+            "to trace; raise the noise filter, lower the color precision, or use Embed raster mode."
+        )
     # Scale the traced paths back up to the original dimensions.
     tw, th = traced.size
     return re.sub(
@@ -178,7 +194,11 @@ def convert(image: Image.Image, fmt: OutputFormat, options: ConvertOptions, sour
 
     if fmt.pil_format is None:
         svg = image_to_svg(image, options)
-        return ConvertResult(filename, svg.encode("utf-8"), fmt.mime, svg)
+        if options.svg_mode == SVG_EMBED:
+            preview = normalize(image)  # same pixels, without inlining a huge SVG
+        else:
+            preview = svg if len(svg) <= MAX_SVG_PREVIEW_BYTES else None
+        return ConvertResult(filename, svg.encode("utf-8"), fmt.mime, preview)
 
     prepared = prepare_for(image, fmt)
     save_kwargs = {"format": fmt.pil_format}

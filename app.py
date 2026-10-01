@@ -96,7 +96,10 @@ with tab_single:
             saved = st.session_state.get("single_result")
             if saved and saved[0] == signature:
                 result = saved[1]
-                st.image(result.preview, caption="Converted Image", width="stretch")
+                if result.preview is None:
+                    st.info("ℹ️ The converted file is too large to preview, but you can still download it.")
+                else:
+                    st.image(result.preview, caption="Converted Image", width="stretch")
                 st.download_button(
                     label=f"Download {fmt.label}",
                     data=result.data,

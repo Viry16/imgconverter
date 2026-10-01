@@ -1,6 +1,7 @@
 import io
 
 import pytest
+import converter
 from PIL import Image
 
 from converter import (
@@ -84,6 +85,39 @@ def test_svg_trace_downscales_large_images_but_keeps_size():
     result = convert(make_image("RGB", size=(3000, 1500)), FORMATS["SVG"], ConvertOptions(), "big.png")
     svg = result.data.decode("utf-8")
     assert 'width="3000" height="1500" viewBox="0 0 1024 512"' in svg
+
+
+def test_svg_previews():
+    traced = convert(make_image("RGBA"), FORMATS["SVG"], ConvertOptions(), "logo.png")
+    assert traced.preview == traced.data.decode("utf-8")
+    embedded = convert(make_image("RGBA"), FORMATS["SVG"], ConvertOptions(svg_mode=SVG_EMBED), "logo.png")
+    assert isinstance(embedded.preview, Image.Image)
+
+
+def test_svg_trace_skips_preview_when_large(monkeypatch):
+    monkeypatch.setattr(converter, "MAX_SVG_PREVIEW_BYTES", 10)
+    result = convert(make_image("RGBA"), FORMATS["SVG"], ConvertOptions(), "logo.png")
+    assert result.preview is None and result.data
+
+
+def test_svg_trace_rejects_huge_output(monkeypatch):
+    monkeypatch.setattr(converter, "MAX_SVG_BYTES", 10)
+    with pytest.raises(ConversionError, match="too large"):
+        convert(make_image("RGBA"), FORMATS["SVG"], ConvertOptions(), "logo.png")
+
+
+def test_svg_trace_panic_becomes_conversion_error(monkeypatch):
+    import vtracer
+
+    class PanicException(BaseException):
+        pass
+
+    def panic(*args, **kwargs):
+        raise PanicException("overflow")
+
+    monkeypatch.setattr(vtracer, "convert_raw_image_to_svg", panic)
+    with pytest.raises(ConversionError, match="overflow"):
+        convert(make_image("RGBA"), FORMATS["SVG"], ConvertOptions(), "logo.png")
 
 
 def test_load_image_rejects_non_images():
